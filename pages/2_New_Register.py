@@ -30,6 +30,11 @@ import tkinter as tk
 #  A standard GUI (Graphical User Interface) toolkit for creating windowed applications.
 
 from tkinter import font as tkFont
+from tkinter import messagebox
+from pathlib import Path
+import re
+
+from attendance_core import FACE_DIR, FEATURES_CSV, create_person_folder, validate_name
 # importing font from tkinter toolkit.
 
 from PIL import Image, ImageTk
@@ -72,10 +77,6 @@ st.markdown("""
   </div>
   """,
               unsafe_allow_html= True )
-# it will load a spinner which is used to tally the time period of loading of new_register.py.
-with st.spinner('Wait for it...'):
-    time.sleep(3)
-st.success('Done!')
 
 # Use frontal face detector of Dlib
 detector = dlib.get_frontal_face_detector()
@@ -114,7 +115,7 @@ class Face_Register:
         self.font_step_title = tkFont.Font(family='Helvetica', size=15, weight='bold')
         self.font_warning = tkFont.Font(family='Helvetica', size=15, weight='bold')
 
-        self.path_photos_from_camera = "data/data_faces_from_camera/"
+        self.path_photos_from_camera = str(FACE_DIR) + os.sep
         self.current_face_dir = ""
         self.font = cv2.FONT_ITALIC
 
@@ -139,24 +140,47 @@ class Face_Register:
         self.start_time = time.time()
 
         self.cap = cv2.VideoCapture(0)  # Get video stream from camera
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
 
         # self.cap = cv2.VideoCapture("test.mp4")   # Input local video
 
     #  Delete old face folders
     def GUI_clear_data(self):
-        #  "/data_faces_from_camera/person_x/"...
-        folders_rd = os.listdir(self.path_photos_from_camera)
-        for i in range(len(folders_rd)):
-            shutil.rmtree(self.path_photos_from_camera + folders_rd[i])
-        if os.path.isfile("data/features_all.csv"):
-            os.remove("data/features_all.csv")
+        if not messagebox.askyesno(
+            "Delete enrollment data?",
+            "Permanently delete all registered face photos and the descriptor CSV? Attendance history is kept.",
+            parent=self.win,
+        ):
+            return
+        root = Path(self.path_photos_from_camera).resolve()
+        folders = [item for item in root.iterdir()
+                   if item.is_dir() and re.fullmatch(r"person_\d+(?:_.*)?", item.name)]
+        if any(item.is_symlink() or item.resolve().parent != root for item in folders):
+            self.log_all["text"] = "Refusing to clear linked directories. Check enrollment storage."
+            return
+        try:
+            for folder in folders:
+                shutil.rmtree(folder)
+            FEATURES_CSV.unlink(missing_ok=True)
+        except OSError as error:
+            self.log_all["text"] = f"Could not clear all enrollment data: {error}"
+            self.face_folder_created_flag = False
+            return
         self.label_cnt_face_in_database['text'] = "0"
         self.existing_faces_cnt = 0
+        self.current_face_dir = ""
+        self.face_folder_created_flag = False
         self.log_all["text"] = "Face images and `features_all.csv` removed!"
 
     def GUI_get_input_name(self):
-        self.input_name_char = self.input_name.get()
-        self.create_face_folder()
+        try:
+            self.input_name_char = validate_name(self.input_name.get())
+            self.create_face_folder()
+        except (ValueError, OSError) as error:
+            self.log_all["text"] = str(error)
+            self.face_folder_created_flag = False
+            self.current_face_dir = ""
+            return
         self.label_cnt_face_in_database['text'] = str(self.existing_faces_cnt)
 
     def GUI_info(self):
@@ -179,7 +203,7 @@ class Face_Register:
         # Step 1: Clear old data
         tk.Label(self.frame_right_info,
                  font=self.font_step_title,
-                 text="Step 1: Clear face photos").grid(row=5, column=0, columnspan=2, sticky=tk.W, padx=5, pady=20)
+                 text="Optional: Clear face photos").grid(row=5, column=0, columnspan=2, sticky=tk.W, padx=5, pady=20)
         tk.Button(self.frame_right_info,
                   text='Clear',
                   command=self.GUI_clear_data).grid(row=6, column=0, columnspan=3, sticky=tk.W, padx=5, pady=2)
@@ -216,18 +240,19 @@ class Face_Register:
         if os.path.isdir(self.path_photos_from_camera):
             pass
         else:
-            os.mkdir(self.path_photos_from_camera)
+            os.makedirs(self.path_photos_from_camera, exist_ok=True)
 
     # Start from person_x+1
     def check_existing_faces_cnt(self):
-        if os.listdir("data/data_faces_from_camera/"):
+        if os.listdir(self.path_photos_from_camera):
             # Get the order of latest person
-            person_list = os.listdir("data/data_faces_from_camera/")
+            person_list = os.listdir(self.path_photos_from_camera)
             person_num_list = []
             for person in person_list:
-                person_order = person.split('_')[1].split('_')[0]
-                person_num_list.append(int(person_order))
-            self.existing_faces_cnt = max(person_num_list)
+                match = re.fullmatch(r"person_(\d+)(?:_.*)?", person)
+                if match and (Path(self.path_photos_from_camera) / person).is_dir():
+                    person_num_list.append(int(match.group(1)))
+            self.existing_faces_cnt = max(person_num_list, default=0)
 
         # Start from person_1
         else:
@@ -247,16 +272,9 @@ class Face_Register:
         self.label_fps_info["text"] = str(self.fps.__round__(2))
 
     def create_face_folder(self):
-        #  Create the folders for saving faces
-        self.existing_faces_cnt += 1
-        if self.input_name_char:
-            self.current_face_dir = self.path_photos_from_camera + \
-                                    "person_" + str(self.existing_faces_cnt) + "_" + \
-                                    self.input_name_char
-        else:
-            self.current_face_dir = self.path_photos_from_camera + \
-                                    "person_" + str(self.existing_faces_cnt)
-        os.makedirs(self.current_face_dir)
+        folder, number = create_person_folder(self.input_name_char, self.path_photos_from_camera)
+        self.current_face_dir = str(folder)
+        self.existing_faces_cnt = number
         self.log_all["text"] = "\"" + self.current_face_dir + "/\" created!"
         logging.info("\n%-40s %s", "Create folders:", self.current_face_dir)
 
@@ -267,19 +285,25 @@ class Face_Register:
         if self.face_folder_created_flag:
             if self.current_frame_faces_cnt == 1:
                 if not self.out_of_range_flag:
-                    self.ss_cnt += 1
+                    next_count = self.ss_cnt + 1
                     #  Create blank image according to the size of face detected
                     self.face_ROI_image = np.zeros((int(self.face_ROI_height * 2), self.face_ROI_width * 2, 3),
                                                    np.uint8)
                     for ii in range(self.face_ROI_height * 2):
                         for jj in range(self.face_ROI_width * 2):
-                            self.face_ROI_image[ii][jj] = self.current_frame[self.face_ROI_height_start - self.hh + ii][
+                            self.face_ROI_image[ii][jj] = self.raw_frame[self.face_ROI_height_start - self.hh + ii][
                                 self.face_ROI_width_start - self.ww + jj]
-                    self.log_all["text"] = "\"" + self.current_face_dir + "/img_face_" + str(
-                        self.ss_cnt) + ".jpg\"" + " saved!"
                     self.face_ROI_image = cv2.cvtColor(self.face_ROI_image, cv2.COLOR_BGR2RGB)
-
-                    cv2.imwrite(self.current_face_dir + "/img_face_" + str(self.ss_cnt) + ".jpg", self.face_ROI_image)
+                    target = Path(self.current_face_dir) / f"img_face_{next_count}.jpg"
+                    try:
+                        saved = cv2.imwrite(str(target), self.face_ROI_image)
+                    except cv2.error:
+                        saved = False
+                    if not saved:
+                        self.log_all["text"] = "Image could not be saved. Check folder permissions."
+                        return
+                    self.ss_cnt = next_count
+                    self.log_all["text"] = f"Saved {target.name}"
                     logging.info("%-40s %s/img_face_%s.jpg", "Save into：",
                                  str(self.current_face_dir), str(self.ss_cnt) + ".jpg")
                 else:
@@ -290,18 +314,23 @@ class Face_Register:
             self.log_all["text"] = "Please run step 2!"
 
     def get_frame(self):
-        try:
-            if self.cap.isOpened():
-                ret, frame = self.cap.read()
-                frame = cv2.resize(frame, (640,480))
-                return ret, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        except:
-            print("Error: No video input!!!")
+        if self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if ret and frame is not None:
+                frame = cv2.resize(frame, (640, 480))
+                return True, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return False, None
 
     #  Main process of face detection and saving
     def process(self):
         ret, self.current_frame = self.get_frame()
-        faces = detector(self.current_frame, 0)
+        if not ret:
+            self.current_frame_faces_cnt = 0
+            self.log_all["text"] = "No camera frame. Check webcam access or close this window."
+            self.win.after(200, self.process)
+            return
+        self.raw_frame = self.current_frame.copy()
+        faces = detector(self.raw_frame, 0)
         # Get frame
         if ret:
             self.update_fps()
@@ -344,12 +373,22 @@ class Face_Register:
         # Refresh frame
         self.win.after(20, self.process)
 
+    def close(self):
+        self.cap.release()
+        self.win.destroy()
+
     def run(self):
-        self.pre_work_mkdir()
-        self.check_existing_faces_cnt()
-        self.GUI_info()
-        self.process()
-        self.win.mainloop()
+        try:
+            if not self.cap.isOpened():
+                self.win.destroy()
+                raise RuntimeError("Cannot open the default webcam. Check permissions and other camera apps.")
+            self.pre_work_mkdir()
+            self.check_existing_faces_cnt()
+            self.GUI_info()
+            self.process()
+            self.win.mainloop()
+        finally:
+            self.cap.release()
 
 
 def main():
@@ -359,4 +398,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if st.button("Open registration camera"):
+        try:
+            main()
+        except (OSError, RuntimeError, tk.TclError) as error:
+            st.error(str(error))

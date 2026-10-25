@@ -1,5 +1,7 @@
 # 🔸 Virtual environment
 venv311/
+.venv/
+.test-artifacts/
 
 # 🔸 Python cache
 __pycache__/
@@ -9,6 +11,8 @@ __pycache__/
 
 data/data_faces_from_camera/
 attendance.db
+attendance.db-*
+data/features_all.csv
 
 # 🔸 Logs / temp
 *.log

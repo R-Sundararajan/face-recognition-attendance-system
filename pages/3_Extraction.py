@@ -1,194 +1,82 @@
-#Extraction.py = Extract features from images and save into "features_all.csv"
-
-import streamlit as st
-# A library for building custom web applications for data science and machine learning projects.
-
-import os
-# A module that provides functions for interacting with the operating system,
-# like reading or writing files, and executing system commands.
-
-import dlib
-# A toolkit containing machine learning algorithms,
-# often used for face detection and facial landmark recognition.
+"""Generate one mean pretrained dlib descriptor per enrolled person."""
 
 import csv
-# used to csv files
-
-import numpy as np
-# A library for numerical operations, especially useful for working with arrays,
-# matrices, and performing mathematical operations.
-
-import logging
-# A module that provides a flexible framework for emitting log messages from Python programs
-# useful for tracking events during execution.
+import os
+from pathlib import Path
+import re
+import tempfile
 
 import cv2
-#  OpenCV library for computer vision tasks like image processing,
-#  capturing images from the camera, and performing machine learning.
-# Hide the Deploy button, header, and footer using CSS
-st.set_page_config(page_title="Face recognition attendance system", page_icon="🔒")
+import dlib
+import numpy as np
+import streamlit as st
 
-st.markdown(
-    """
-    <style>
-        #MainMenu {visibility: hidden;}  /* Hide the menu */
-        footer {visibility: hidden;}      /* Hide the footer */
-        header {visibility: hidden;}      /* Hide the header */
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+from attendance_core import FACE_DIR, FEATURES_CSV, MODEL_DIR, descriptor, validate_name
 
 
-
-st.markdown("""
- <style>
-   h1 {    
-  }  
-  img{  
-  height: 250px;  
-  width: 250px;  
-  }  
- #left {    
-  text-align: left;  
-  }  
-  #center {    
-  text-align: center;
-  backgroundColor = "#000000"  
-  }  
-  #right{    
-  text-align: right; }
-   </style>
-   <div id ="center">
-   <h1> Click the button to Convert images into CSV </h1>
-   </div>
-   """,
-       unsafe_allow_html=True)
-
-con = st.button("Extract CSV")
-print("con", con)
-if con == True:
-
-
-
-    st.markdown("""
-  <style>
-  h1{
-  }  
-  #left {    
-  text-align: left;  
-  }  
-  #center {    
-  text-align: center;
-  backgroundColor = "#000000"  
-  }  
-  #right{    
-  text-align: right; 
-  }
-   
-   div {    
-  }  
-  img{  
-  height: 250px;  
-  width: 250px;  
-  }  
- #left {    
-  text-align: left;  
-  }  
-  #center {    
-  text-align: center;
-  backgroundColor = "#000000"  
-  }  
-  #right{    
-  text-align: right; }
-   </style>
-   <div id ="center">
-    <h1> Facial Recognition of the new faces has been done
-     </h1>
-   """,
-                unsafe_allow_html=True)
-
-#  Path of cropped faces
-path_images_from_camera = "data/data_faces_from_camera/"
-
-#  Use frontal face detector of Dlib
-detector = dlib.get_frontal_face_detector()
-
-#  Get face landmarks
-predictor = dlib.shape_predictor('data/data_dlib/shape_predictor_68_face_landmarks.dat')
-
-#  Use Dlib resnet50 model to get 128D face descriptor
-face_reco_model = dlib.face_recognition_model_v1("data/data_dlib/dlib_face_recognition_resnet_model_v1.dat")
-
-
-#  Return 128D features for single image
-
-def return_128d_features(path_img):
-    img_rd = cv2.imread(path_img)
-    faces = detector(img_rd, 1)
-
-    logging.info("%-40s %-20s", " Image with faces detected:", path_img)
-
-    # For photos of faces saved, we need to make sure that we can detect faces from the cropped images
-    if len(faces) != 0:
-        shape = predictor(img_rd, faces[0])
-        face_descriptor = face_reco_model.compute_face_descriptor(img_rd, shape)
-    else:
-        face_descriptor = 0
-        logging.warning("no face")
-    return face_descriptor
-
-
-#   Return the mean value of 128D face descriptor for person X
-
-def return_features_mean_personX(path_face_personX):
-    features_list_personX = []
-    photos_list = os.listdir(path_face_personX)
-    if photos_list:
-        for i in range(len(photos_list)):
-            #  return_128d_features()  128D  / Get 128D features for single image of personX
-            logging.info("%-40s %-20s", " / Reading image:", path_face_personX + "/" + photos_list[i])
-            features_128d = return_128d_features(path_face_personX + "/" + photos_list[i])
-            #  Jump if no face detected from image
-            if features_128d == 0:
-                i += 1
-            else:
-                features_list_personX.append(features_128d)
-    else:
-        logging.warning(" Warning: No images in%s/", path_face_personX)
-
-
-    if features_list_personX:
-        features_mean_personX = np.array(features_list_personX, dtype=object).mean(axis=0)
-    else:
-        features_mean_personX = np.zeros(128, dtype=object, order='C')
-    return features_mean_personX
+def extract_features(root=FACE_DIR, destination=FEATURES_CSV):
+    root, destination = Path(root), Path(destination)
+    if not root.is_dir():
+        raise ValueError("No enrollment directory found. Register and save face images first.")
+    people = sorted(item for item in root.iterdir()
+                    if item.is_dir() and re.fullmatch(r"person_\d+(?:_.*)?", item.name))
+    if not people:
+        raise ValueError("No registered people found. Register and save face images first.")
+    detector = dlib.get_frontal_face_detector()
+    predictor = dlib.shape_predictor(str(MODEL_DIR / "shape_predictor_68_face_landmarks.dat"))
+    model = dlib.face_recognition_model_v1(str(MODEL_DIR / "dlib_face_recognition_resnet_model_v1.dat"))
+    rows, skipped, names = [], 0, set()
+    for person in people:
+        name = validate_name(person.name.split("_", 2)[-1] if person.name.count("_") >= 2 else person.name)
+        if name in names:
+            raise ValueError("Duplicate enrollment names found. Use a distinct name for each person.")
+        names.add(name)
+        features = []
+        for photo in sorted(person.iterdir()):
+            if not photo.is_file():
+                continue
+            image = cv2.imread(str(photo))
+            if image is None:
+                skipped += 1
+                continue
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            faces = detector(image, 1)
+            if len(faces) != 1:
+                skipped += 1
+                continue
+            features.append(descriptor(model.compute_face_descriptor(image, predictor(image, faces[0]))))
+        if not features:
+            raise ValueError(f"Enrollment folder {person.name} has no usable single-face images. Existing CSV was not changed.")
+        rows.append([name, *descriptor(np.mean(features, axis=0))])
+    # Replace only after every person has a valid descriptor; failures preserve the old CSV.
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", newline="", encoding="utf-8",
+                                         dir=destination.parent, suffix=".tmp", delete=False) as output:
+            temporary = Path(output.name)
+            csv.writer(output).writerows(rows)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return len(rows), skipped
 
 
 def main():
-    logging.basicConfig(level=logging.INFO)
-    #  Get the order of latest person
-    person_list = os.listdir("data/data_faces_from_camera/")
-    person_list.sort()
+    st.set_page_config(page_title="Face recognition attendance system")
+    st.title("Facial Feature Extraction")
+    if st.button("Extract CSV"):
+        try:
+            with st.spinner("Extracting face descriptors..."):
+                people, skipped = extract_features()
+        except (ValueError, OSError, RuntimeError) as error:
+            st.error(str(error))
+        else:
+            st.success(f"Saved descriptors for {people} people to data/features_all.csv.")
+            if skipped:
+                st.warning(f"Skipped {skipped} unreadable images or images without exactly one face.")
 
-    with open("data/features_all.csv", "w", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        for person in person_list:
-            # Get the mean/average features of face/personX, it will be a list with a length of 128D
-            logging.info("%sperson_%s", path_images_from_camera, person)
-            features_mean_personX = return_features_mean_personX(path_images_from_camera + person)
 
-            if len(person.split('_', 2)) == 2:
-                # "person_x"
-                person_name = person
-            else:
-                # "person_x_tom"
-                person_name = person.split('_', 2)[-1]
-            features_mean_personX = np.insert(features_mean_personX, 0, person_name, axis=0)
-            # features_mean_personX will be 129D, person name + 128 features
-            writer.writerow(features_mean_personX)
-            logging.info('\n')
-        logging.info("Save all the features of faces registered into: data/features_all.csv")
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

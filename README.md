@@ -1,129 +1,212 @@
-# Face Recognition Based Smart Attendance System
+# Face Recognition-Based Smart Attendance System
 
-## Overview
+A local Python application that replaces manual attendance entry with webcam-based face matching. Streamlit provides navigation, Tkinter handles enrollment, OpenCV displays recognition, and Flask lets users review attendance stored in SQLite.
 
-This repository contains a local face-recognition attendance system built with Python. It provides a Streamlit-based application flow for registering faces, generating face encodings, taking attendance from a webcam, and viewing attendance data stored in SQLite.
+The system uses **pretrained dlib models**, not a newly trained neural network. Enrollment produces averaged face descriptors; recognized names are recorded once per local calendar date.
 
-At a high level, users register face images through a camera interface, convert those images into 128-dimensional dlib face descriptors, and then run the attendance taker. During attendance, the webcam feed is checked against the saved descriptors, and recognized names are recorded with the current date and time.
+## Demo Preview
 
-## Features
+**[Watch the existing screen recording](Demo/walkthrough.mp4)**
 
-- Streamlit home page and multipage navigation.
-- Webcam-based face registration using OpenCV, dlib, Tkinter, and Pillow.
-- Registered face images saved under `data/data_faces_from_camera/`.
-- Face descriptor extraction into `data/features_all.csv`.
-- Mean 128D face descriptor generation for each registered person.
-- Real-time attendance recognition from the default webcam.
-- SQLite attendance storage in `attendance.db`.
-- Duplicate attendance prevention for the same name on the same date.
-- Date-based attendance viewing through a Flask page at `http://127.0.0.1:5000`.
+These are genuine captures from an earlier version, not new validation results. Button labels and messages may differ from the current code.
 
-## Technologies Used
+| Home | Face registration |
+| --- | --- |
+| ![Streamlit home and navigation](Demo/home.png) | ![Tkinter registration window with its camera disabled](Demo/registration.png) |
+| Application navigation and feature list. | Name entry and capture controls; the camera is disabled in this capture. |
+| Attendance confirmation | Attendance history |
+| ![Streamlit attendance confirmation](Demo/attendance-confirmation.png) | ![Flask date-filtered attendance table](Demo/attendance-history.png) |
+| A previously captured attendance message, not an accuracy evaluation. | Date selection and a stored name/time record. |
 
-### Programming Languages
+There is no extraction screenshot in the existing gallery. The recording also shows native camera windows with a disabled camera, so it is not evidence of successful live enrollment or recognition.
 
-- Python
-- HTML
-- CSS
+## Key Features
 
-### Computer Vision Libraries
+- Named webcam enrollment with cropped image storage and input validation.
+- Extraction of one mean 128-dimensional descriptor per person.
+- Per-face recognition for multiple detected faces, with centroid tracking between classifications.
+- Unknown-face labeling and attendance logging for matched names only.
+- SQLite persistence with database-enforced same-name, same-date duplicate prevention.
+- Date-filtered attendance history through a separate Flask viewer.
+- Confirmed enrollment-data clearing; attendance history is retained.
 
-- OpenCV (`opencv-python`)
-- Pillow
+## Technology Stack
 
-### Machine Learning / Face Recognition Libraries
+| Technology | Responsibility |
+| --- | --- |
+| Python | Application logic and standard-library CSV/filesystem utilities |
+| OpenCV | Camera capture, image conversion/cropping, recognition window |
+| dlib | Frontal face detection, 68-point landmarks, pretrained face descriptors |
+| NumPy | Descriptor averaging and Euclidean distance |
+| pandas | Reading and validating saved descriptor rows |
+| Streamlit | Home page and workflow navigation |
+| Tkinter and Pillow | Native enrollment window and camera-image display |
+| Flask and Jinja2 | Date-filtered attendance routes and HTML rendering |
+| SQLite | Local attendance storage through `sqlite3` |
+| HTML, CSS, Bootstrap | Attendance viewer presentation; Bootstrap loads from a CDN |
 
-- dlib
-- face_recognition_resnet_models
-- NumPy
+Dependencies are pinned in [requirements.txt](requirements.txt). The application loads the bundled `.dat` files directly; the installed `face_recognition_models` package is not imported by the active pipeline.
 
-### Database Technologies
+## System Architecture
 
-- SQLite
+```mermaid
+flowchart TD
+    UI[Streamlit navigation] --> EN[Tkinter enrollment]
+    EN --> EC[Enrollment camera]
+    EC --> ED[Face detection and cropped image capture]
+    ED --> PH[Per-person image folders]
+    PH --> EX[Extract CSV button]
+    EX --> EL[Face detection and 68-point landmarks]
+    EL --> EV[128D descriptors and per-person mean]
+    EV --> CSV[Known descriptors CSV]
+    UI --> CAM[Attendance camera]
+    CAM --> DET[Face detection]
+    DET --> LM[68-point landmark extraction]
+    LM --> ENC[128D face encoding]
+    ENC --> MATCH[Euclidean nearest-face matching]
+    CSV --> MATCH
+    MATCH --> VALID[Known name and same-day validation]
+    MATCH --> UNKNOWN[Unknown label - no attendance]
+    VALID --> DB[SQLite attendance]
+    DB --> VIEW[Flask date-filtered viewer]
+```
 
-### Web Frameworks
+Enrollment and recognition run on the computer hosting Python, not inside the browser. The CSV connects enrollment to recognition; SQLite connects the attendance taker to the independently started Flask viewer. Shared validation and storage functions live in `attendance_core.py`.
 
-- Streamlit
-- Flask
+## How Face Recognition Works
 
-### Frontend Technologies
+1. dlib's frontal detector locates faces in RGB images. The landmark predictor estimates **68 facial landmarks**, and the recognition model generates a **128D descriptor** for each face.
+2. Extraction accepts images containing exactly one detected face and averages valid descriptors for each enrollment folder. It replaces the CSV only after all enrolled people have usable descriptors.
+3. Recognition selects the known descriptor with the smallest Euclidean distance. A match requires **distance < 0.4**; equality or a larger distance produces `unknown`. This configured threshold is not a measured accuracy value.
+4. The camera loop supports several faces and uses centroid-based name tracking between classifications. It reclassifies periodically, at a configured interval of 10 frames.
+5. Only matched names are submitted to storage. SQLite's `UNIQUE(name, date)` rule and conflict-aware insertion preserve the first attendance time for that name/date.
 
-- HTML templates
-- CSS
-- Bootstrap CDN in the Flask attendance template
+## Installation and Setup
 
-### Supporting Libraries
+The verified setup is **Windows x64 with CPython 3.11**. A desktop session, Tkinter, and a working default webcam (device `0`) are required for enrollment and live recognition. Enable camera access for desktop applications and close other programs using the camera.
 
-- pandas
-- csv, datetime, logging, os, shutil, time, tkinter, and sqlite3 from the Python standard library
+From the repository root in **PowerShell**:
+
+```powershell
+python --version
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .\dlib-19.24.1-cp311-cp311-win_amd64.whl
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip check
+```
+
+The wheel is specific to CPython 3.11 on 64-bit Windows. Other operating systems and Python versions were not verified; they require a compatible dlib installation rather than this wheel. No environment variables or external database server are required.
+
+Keep these included files in `data/data_dlib/`:
+
+- `shape_predictor_68_face_landmarks.dat`
+- `dlib_face_recognition_resnet_model_v1.dat`
+
+The application creates enrollment directories and initializes the attendance table when needed. The repository directory must be writable. Data/model paths are anchored to the repository, rather than the terminal's current directory.
+
+## Running the Application
+
+Start Streamlit from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run Main_page.py --server.address 127.0.0.1
+```
+
+Open [the Streamlit application](http://127.0.0.1:8501).
+
+In a **second terminal**, start the attendance viewer:
+
+```powershell
+.\.venv\Scripts\python.exe app.py
+```
+
+Open [the Flask viewer](http://127.0.0.1:5000), or follow the Streamlit **Database** link. That link does not start Flask. Both services are local development servers; Flask debugging is disabled. Stop them with `Ctrl+C`.
+
+## Step-by-Step Demo
+
+1. **Register:** select **New Register**, then **Open registration camera**. Enter a distinct name and click **Input**. Keep one face inside the capture boundary, click **Save current face** for the images you want, and close the Tkinter window. Images appear under `data/data_faces_from_camera/person_<id>_<name>/`. See the [registration capture](Demo/registration.png). **Clear** is optional and destructive; confirmation is required.
+2. **Extract:** select **Extraction** and click **Extract CSV**. A success message appears only after `data/features_all.csv` is written. Missing/invalid enrollment produces an error and preserves the previous CSV. Re-run extraction after enrolling new people.
+3. **Recognize:** select **Attendance taker**, then **Start attendance camera**. Known faces can create an attendance record; unmatched faces remain `unknown`. Press `q` in the OpenCV window to stop. See the earlier [attendance confirmation](Demo/attendance-confirmation.png).
+4. **Review:** with Flask running, select a date in the viewer and click **Show attendance**. Matching names and first-recorded times appear, or a no-data message is shown. See the [history capture](Demo/attendance-history.png).
+
+Names identify people in both the CSV and attendance table. Use distinct names; this project has no separate student/employee identifier. New captures and descriptors should be generated only with the participants' permission.
 
 ## Project Structure
 
 ```text
-Face-Recognition-Based-Smart-Attendance-System/
-|-- Main_page.py          # Main Streamlit entry page
+face-recognition-attendance-system/
+|-- Main_page.py          # Streamlit home
+|-- pages/
+|   |-- 1_Attendance_taker.py # Recognition, tracking, attendance
+|   |-- 2_New_Register.py     # Tkinter enrollment and capture
+|   |-- 3_Extraction.py       # Mean descriptor generation
+|   `-- 4_Database.py         # Link to the Flask viewer
+|-- attendance_core.py    # Paths, validation, matching, SQLite operations
 |-- app.py                # Flask attendance viewer
-|-- pages/                # Streamlit pages for attendance, registration, extraction, and database link
-|-- templates/            # Flask HTML template
+|-- templates/           # Active Flask HTML template
 |-- data/
-|   |-- data_dlib/        # dlib face recognition and landmark model files
-|   |-- data_faces_from_camera/ # Captured registered face images
-|   `-- features_all.csv  # Saved face descriptors
-|-- Details/              # Additional repository assets
-|-- attendance.db         # SQLite attendance database
-|-- requirements.txt      # Python dependencies
-`-- dlib-19.24.1-cp311-cp311-win_amd64.whl # Included Windows dlib wheel for Python 3.11
+|   |-- data_dlib/        # Bundled pretrained models
+|   |-- data_faces_from_camera/ # Local enrollment images (ignored)
+|   `-- features_all.csv  # Generated descriptors; existing tracked data remains
+|-- Demo/                # Existing screenshots and recording
+|-- Details/             # Older repository illustration and import notes
+|-- tests/               # Webcam-free regression tests
+|-- docs/VALIDATION.md    # Audit, validation scope, privacy/licensing notes
+|-- requirements.txt     # Pinned dependencies
+`-- dlib-19.24.1-cp311-cp311-win_amd64.whl
 ```
 
-## Setup
+`attendance.db` is a local generated file. The root-level `index.html` is not used by Flask; `templates/index.html` is the active template.
 
-Use Python 3.11 if you plan to install the included Windows dlib wheel.
+## Data Storage
 
-```bash
-python -m venv venv311
-venv311\Scripts\activate
-pip install .\dlib-19.24.1-cp311-cp311-win_amd64.whl
-pip install -r requirements.txt
+- **Images:** per-person directories containing captured JPEG files.
+- **Descriptors:** headerless CSV; each row contains a name followed by 128 numeric values. The loader rejects empty, malformed, nonnumeric, nonfinite, all-zero, or duplicate-name entries.
+- **Attendance:** `attendance.db`, with the schema below. Times and dates use the host computer's local clock.
+
+```sql
+CREATE TABLE IF NOT EXISTS attendance (
+    name TEXT,
+    time TEXT,
+    date DATE,
+    UNIQUE(name, date)
+);
 ```
 
-The application expects the dlib model files to exist in `data/data_dlib/` and uses the default webcam through OpenCV.
+A unique `(name, date)` index also protects older compatible schemas. If an older database already contains duplicates, initialization reports an error rather than silently deleting history.
 
-## Running the Application
+## Testing and Validation
 
-Start the Streamlit application:
+Run the webcam-free suite and syntax checks:
 
-```bash
-streamlit run Main_page.py
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m compileall -q Main_page.py app.py attendance_core.py pages tests
 ```
 
-For the date-based attendance table, start the Flask app in a separate terminal:
+| Area | Verified scope |
+| --- | --- |
+| Enrollment | Name/folder validation, clear confirmation, failed reads/writes; camera mocked |
+| Extraction | Mean calculation, preserved CSV on failure, button-triggered Streamlit execution; model outputs mocked |
+| Recognition | Euclidean distance, nearest match, strict threshold boundary, multiple faces and unknown exclusion; camera/model mocked |
+| Storage | Initialization, same-day uniqueness, next-day insertion, first-time preservation |
+| Viewer | Date filtering, empty database, invalid dates, unavailable storage through Flask's test client |
 
-```bash
-python app.py
-```
+The suite passed on Windows/Python 3.11; dependency checks and model loading also passed. Live enrollment and recognition with a consenting participant were **not revalidated**. Detailed evidence and remaining manual checks are in [docs/VALIDATION.md](docs/VALIDATION.md).
 
-Then open `http://127.0.0.1:5000` or use the Streamlit database page link.
+No validated performance metrics are currently documented in the repository.
 
-## System Workflow
+## Limitations and Future Improvements
 
-1. Face registration: the registration page opens a Tkinter camera window, accepts a name, creates a folder for that person, and saves cropped face images.
-2. Face encoding generation: the extraction page reads saved face images, computes dlib 128D face descriptors, averages each person's descriptors, and writes them to `data/features_all.csv`.
-3. Recognition process: the attendance page loads `features_all.csv`, detects faces from the webcam, computes descriptors for detected faces, and compares them with saved descriptors using Euclidean distance.
-4. Attendance recording: when a face is recognized, the system inserts the name, current time, and current date into the `attendance` table in SQLite. The code checks existing records to avoid marking the same person more than once per date.
+- Requires a local desktop/webcam; this is not a browser-camera or hosted deployment.
+- Lighting, pose, occlusion, and similar appearances can affect matching. There is no liveness detection or anti-spoofing.
+- Centroid tracking can associate names incorrectly when faces cross; multiple-face support is not a measured reliability guarantee.
+- No authentication, roles, encryption, identity management, or production deployment configuration is implemented.
+- Future work could add consent-based evaluation, liveness checks, stronger identity/tracking, access control, and a reviewed deployment setup. These are not current features.
 
-## Repository Insights
+## Privacy and Model Notices
 
-- `Main_page.py` defines the Streamlit landing page and lists the main application capabilities.
-- `pages/2_New_Register.py` handles webcam registration, folder creation, face image capture, and clearing previously saved face data.
-- `pages/3_Extraction.py` converts registered face images into `data/features_all.csv`.
-- `pages/1_Attendance_taker.py` loads known descriptors, performs webcam recognition, and records attendance in SQLite.
-- `pages/4_Database.py` provides a Streamlit link to the local Flask attendance viewer.
-- `app.py` serves a Flask form for selecting a date and reading matching attendance records from `attendance.db`.
-- `templates/index.html` renders the date picker and attendance table for the Flask view.
+Existing tracked descriptors are named biometric data. Ignoring generated files does **not** remove already tracked data or Git history. Existing demo media includes personal names, and the separate server-log capture contains a debugger PIN. Review consent and sanitize public evidence before sharing; see the [maintainer remediation notes](docs/VALIDATION.md#privacy-and-repository-hygiene). No existing biometric data or history was deleted by this update.
 
-## Screenshots and Images
-
-The repository includes `Details/day 1.png`, which can be placed after the Overview section if it represents the application UI or attendance output. The registered face images under `data/data_faces_from_camera/` should not be used as README screenshots unless the subjects have approved their use.
-
-`Demo/` Contains Useful screenshots of the Streamlit home page, the registration camera window and the Flask attendance table.
+The bundled model filenames correspond to [dlib's pretrained models](https://github.com/davisking/dlib-models). Upstream flags a commercial-use restriction associated with the 68-point model's training dataset; review that notice before reuse. dlib's library uses the [Boost Software License](https://github.com/davisking/dlib/blob/master/dlib/LICENSE.txt). These notices do not license this repository: no project-level license or verifiable provenance record for the bundled wheel/models is included. The wheel and models are retained for the existing Windows setup.
 

@@ -1,33 +1,14 @@
 import dlib
-# A toolkit containing machine learning algorithms,
-# often used for face detection and facial landmark recognition.
-import pandas as pd
-# A powerful library for data manipulation and analysis,
-# providing data structures like DataFrame
 import time
-# A module that provides time-related functions like getting the current time or
-# pausing execution for a set amount of time.
 import logging
-# A module that provides a flexible framework for emitting log messages from Python programs
-# useful for tracking events during execution.
 import sqlite3
-# A module for interacting with SQLite databases,
-# allowing you to execute SQL commands and manage database files directly.
-import datetime
-# A module that supplies classes for manipulating dates and times.
 import cv2
-#  OpenCV library for computer vision tasks like image processing,
-#  capturing images from the camera, and performing machine learning.
-import os
-# A module that provides functions for interacting with the operating system,
-# like reading or writing files, and executing system commands.
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
-# This specific environment variable controls the logging level of TensorFlow's.
 import streamlit as st
-# A library for building custom web applications for data science and machine learning projects.
-import numpy as np
-# A library for numerical operations, especially useful for working with arrays,
-# matrices, and performing mathematical operations.
+
+from attendance_core import (
+    MODEL_DIR, init_database, load_descriptors, match_face,
+    euclidean_distance, record_attendance,
+)
 
 # Hide the Deploy button, header, and footer using CSS
 st.markdown(
@@ -60,38 +41,14 @@ st.markdown("""
   </div>
   """,
               unsafe_allow_html= True )
-# it will load a spinner which is used to tally the time period of loading of new_register.py.
-with st.spinner('Wait for it...'):
-    time.sleep(3)
-st.success('Done!')
-
-
-# Dlib  / Use frontal face detector of Dlib
+# Use dlib's frontal face detector.
 detector = dlib.get_frontal_face_detector()
-
-# Dlib landmark / Get face landmarks
-predictor = dlib.shape_predictor('data/data_dlib/shape_predictor_68_face_landmarks.dat')
-
-# Dlib Resnet Use Dlib resnet50 model to get 128D face descriptor
-face_reco_model = dlib.face_recognition_model_v1("data/data_dlib/dlib_face_recognition_resnet_model_v1.dat")
-
-# Create a connection to the database
-conn = sqlite3.connect("attendance.db")
-cursor = conn.cursor()
-
-# Create a table for the current date
-current_date = datetime.datetime.now().strftime("%Y_%m_%d")  # Replace hyphens with underscores
-table_name = "attendance"
-create_table_sql = f"CREATE TABLE IF NOT EXISTS {table_name} (name TEXT, time TEXT, date DATE, UNIQUE(name, date))"
-cursor.execute(create_table_sql)
-
-# Commit changes and close the connection
-conn.commit()
-conn.close()
 
 class Face_Recognizer:
     def __init__(self):
         self.font = cv2.FONT_ITALIC
+        self.predictor = dlib.shape_predictor(str(MODEL_DIR / "shape_predictor_68_face_landmarks.dat"))
+        self.face_reco_model = dlib.face_recognition_model_v1(str(MODEL_DIR / "dlib_face_recognition_resnet_model_v1.dat"))
 
         # FPS
         self.frame_time = 0
@@ -138,25 +95,9 @@ class Face_Recognizer:
 
     #  "features_all.csv"  / Get known faces from "features_all.csv"
     def get_face_database(self):
-        if os.path.exists("data/features_all.csv"):
-            path_features_known_csv = "data/features_all.csv"
-            csv_rd = pd.read_csv(path_features_known_csv, header=None)
-            for i in range(csv_rd.shape[0]):
-                features_someone_arr = []
-                self.face_name_known_list.append(csv_rd.iloc[i][0])
-                for j in range(1, 129):
-                    if csv_rd.iloc[i][j] == '':
-                        features_someone_arr.append('0')
-                    else:
-                        features_someone_arr.append(csv_rd.iloc[i][j])
-                self.face_features_known_list.append(features_someone_arr)
-            logging.info("Faces in Database： %d", len(self.face_features_known_list))
-            return 1
-        else:
-            logging.warning("'features_all.csv' not found!")
-            logging.warning("Please run 'get_faces_from_camera.py' "
-                            "and 'features_extraction_to_csv.py' before 'face_reco_from_camera.py'")
-            return 0
+        self.face_name_known_list, self.face_features_known_list = load_descriptors()
+        logging.info("Loaded registered face descriptors")
+        return True
 
     def update_fps(self):
         now = time.time()
@@ -171,10 +112,7 @@ class Face_Recognizer:
     @staticmethod
     # / Compute the e-distance between two 128D features
     def return_euclidean_distance(feature_1, feature_2):
-        feature_1 = np.array(feature_1)
-        feature_2 = np.array(feature_2)
-        dist = np.sqrt(np.sum(np.square(feature_1 - feature_2)))
-        return dist
+        return euclidean_distance(feature_1, feature_2)
 
     # / Use centroid tracker to link face_x in current frame with person_x in last frame
     def centroid_tracker(self):
@@ -214,24 +152,7 @@ class Face_Recognizer:
                                  cv2.LINE_AA)
     # insert data in database5
     def attendance(self, name):
-        current_date = datetime.datetime.now().strftime('%Y-%m-%d')
-        conn = sqlite3.connect("attendance.db")
-        cursor = conn.cursor()
-        # Check if the name already has an entry for the current date
-        cursor.execute("SELECT * FROM attendance WHERE name = ? AND date = ?", (name, current_date))
-        existing_entry = cursor.fetchone()
-
-        if existing_entry:
-            print(f"{name} is already marked as present for {current_date}")
-
-        else:
-            current_time = datetime.datetime.now().strftime('%H:%M:%S')
-            cursor.execute("INSERT INTO attendance (name, time, date) VALUES (?, ?, ?)",
-                           (name, current_time, current_date))
-            conn.commit()
-            print(f"{name} marked as present for {current_date} at {current_time}")
-
-        conn.close()
+        return record_attendance(name)
 
     #  Face detection and recognition wit OT from input video stream
     def process(self, stream):
@@ -243,10 +164,15 @@ class Face_Recognizer:
                 self.frame_cnt += 1
                 logging.debug("Frame " + str(self.frame_cnt) + " starts")
                 flag, img_rd = stream.read()
+                if not flag or img_rd is None:
+                    st.error("No camera frame received. Check webcam permissions and other camera apps.")
+                    break
+                rgb_frame = cv2.cvtColor(img_rd, cv2.COLOR_BGR2RGB)
                 kk = cv2.waitKey(1)
 
                 # 2.  Detect faces for frame X
-                faces = detector(img_rd, 0)
+                faces = detector(rgb_frame, 0)
+                self.reclassify_interval_cnt += 1
 
                 # 3.  Update cnt for faces in frames
                 self.last_frame_face_cnt = self.current_frame_face_cnt
@@ -261,13 +187,11 @@ class Face_Recognizer:
 
                 # 6.1  if cnt not changes
                 if (self.current_frame_face_cnt == self.last_frame_face_cnt) and (
-                        self.reclassify_interval_cnt != self.reclassify_interval):
+                        self.reclassify_interval_cnt < self.reclassify_interval):
                     logging.debug("scene 1:   No face cnt changes in this frame!!!")
 
                     self.current_frame_face_position_list = []
 
-                    if "unknown" in self.current_frame_face_name_list:
-                        self.reclassify_interval_cnt += 1
 
                     if self.current_frame_face_cnt != 0:
                         for k, d in enumerate(faces):
@@ -311,9 +235,9 @@ class Face_Recognizer:
                         logging.debug("  scene 2.2  Get faces in this frame and do f  ace recognition")
                         self.current_frame_face_name_list = []
                         for i in range(len(faces)):
-                            shape = predictor(img_rd, faces[i])
+                            shape = self.predictor(rgb_frame, faces[i])
                             self.current_frame_face_feature_list.append(
-                                face_reco_model.compute_face_descriptor(img_rd, shape))
+                                self.face_reco_model.compute_face_descriptor(rgb_frame, shape))
                             self.current_frame_face_name_list.append("unknown")
 
                         # 6.2.2.1 Traversal all the faces in the database
@@ -328,39 +252,13 @@ class Face_Recognizer:
                             self.current_frame_face_position_list.append(tuple(
                                 [faces[k].left(), int(faces[k].bottom() + (faces[k].bottom() - faces[k].top()) / 4)]))
 
-                            # 6.2.2.3
-                            # For every faces detected, compare the faces in the database
-                            for i in range(len(self.face_features_known_list)):
-                                #
-                                if str(self.face_features_known_list[i][0]) != '0.0':
-                                    e_distance_tmp = self.return_euclidean_distance(
-                                        self.current_frame_face_feature_list[k],
-                                        self.face_features_known_list[i])
-                                    logging.debug("      with person %d, the e-distance: %f", i + 1, e_distance_tmp)
-                                    self.current_frame_face_X_e_distance_list.append(e_distance_tmp)
-                                else:
-                                    #  person_X
-                                    self.current_frame_face_X_e_distance_list.append(999999999)
-
-                            # 6.2.2.4 / Find the one with minimum e distance
-                            similar_person_num = self.current_frame_face_X_e_distance_list.index(
-                                min(self.current_frame_face_X_e_distance_list))
-
-                            if min(self.current_frame_face_X_e_distance_list) < 0.4:
-                                self.current_frame_face_name_list[k] = self.face_name_known_list[similar_person_num]
-                                logging.debug("  Face recognition result: %s",
-                                              self.face_name_known_list[similar_person_num])
-
-
-                                # Insert attendance record
-                                nam = self.face_name_known_list[similar_person_num]
-                                print(self.face_name_known_list[similar_person_num])
-                                self.attendance(nam)
-                                st.markdown(f"""
-                                    <h3 style='text-align: center; color: white;'>
-                                        {nam} is marked as present
-                                    </h3>
-                                """, unsafe_allow_html=True)
+                            nam = match_face(
+                                self.current_frame_face_feature_list[k],
+                                self.face_name_known_list, self.face_features_known_list,
+                            )
+                            self.current_frame_face_name_list[k] = nam
+                            if nam != "unknown" and self.attendance(nam):
+                                st.success(f"{nam} is marked as present.")
                         # 7.  / Add note on cv2 window
                         self.draw_note(img_rd)
 
@@ -378,10 +276,14 @@ class Face_Recognizer:
         # cap = cv2.VideoCapture("video.mp4")
         # Get video stream from video file
         cap = cv2.VideoCapture(0)  # Get video stream from camera
-        self.process(cap)
-
-        cap.release()
-        cv2.destroyAllWindows()
+        try:
+            if not cap.isOpened():
+                raise RuntimeError("Cannot open the default webcam. Check permissions and other camera apps.")
+            init_database()
+            self.process(cap)
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
 
 
 def main():
@@ -391,4 +293,8 @@ def main():
     Face_Recognizer_con.run()
 
 if __name__ == '__main__':
-    main()
+    if st.button("Start attendance camera"):
+        try:
+            main()
+        except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
+            st.error(str(error))
